@@ -1,56 +1,61 @@
 #!/usr/bin/env python3
 """
 Deep diagnostic: dumps raw content streams and text operators from PDF.
-Run: python diagnose_deep.py "10444483 (1).pdf" > diag_output.txt
-Then share diag_output.txt
+Run: python diagnose_deep.py "10444483 (1).pdf"
 """
 import sys
-import re
+import os
+
+# Force UTF-8 output on Windows
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 def diagnose(pdf_path):
-    print(f"\n{'='*70}")
-    print(f"Deep analysis of: {pdf_path}")
-    print(f"{'='*70}")
+    out_path = pdf_path.replace('.pdf', '_diag.txt').replace(' ', '_')
+    f_out = open(out_path, 'w', encoding='utf-8', errors='replace')
     
-    # Step 1: Raw byte search for ASCII personnel IDs
+    def p(s=''):
+        print(s)
+        f_out.write(s + '\n')
+    
+    p(f"{'='*70}")
+    p(f"Deep analysis of: {pdf_path}")
+    p(f"{'='*70}")
+    
     with open(pdf_path, 'rb') as f:
         raw = f.read()
     
-    print(f"\nFile size: {len(raw)} bytes")
+    p(f"File size: {len(raw)} bytes")
     
-    # Search for personnel ID as ASCII in raw bytes
+    # Search for personnel ID as ASCII
     for pid in [b'10444483', b'67274571']:
         pos = raw.find(pid)
         if pos >= 0:
-            print(f"\nFound ASCII '{pid.decode()}' at byte {pos}")
-            print(f"  Context: {raw[max(0,pos-50):pos+len(pid)+50]}")
+            p(f"\nFound ASCII '{pid.decode()}' at byte {pos}")
+            ctx = raw[max(0,pos-50):pos+len(pid)+50]
+            p(f"  Context hex: {ctx.hex()}")
         else:
-            print(f"\nASCII '{pid.decode()}' NOT found in raw bytes")
+            p(f"\nASCII '{pid.decode()}' NOT found in raw bytes")
     
     # Search UTF-16BE for IDs
     for pid in ['10444483', '67274571']:
         enc = pid.encode('utf-16-be')
         pos = raw.find(enc)
         if pos >= 0:
-            print(f"\nFound UTF-16BE '{pid}' at byte {pos}")
-            print(f"  Hex context: {raw[max(0,pos-20):pos+len(enc)+20].hex()}")
+            p(f"Found UTF-16BE '{pid}' at byte {pos}")
+            p(f"  Hex: {raw[max(0,pos-20):pos+len(enc)+20].hex()}")
         else:
-            print(f"UTF-16BE '{pid}' NOT found")
+            p(f"UTF-16BE '{pid}' NOT found")
     
-    # Step 2: Find all stream objects and decode them
-    # Look for stream...endstream blocks
-    stream_pattern = rb'stream\r?\n(.+?)\r?\nendstream'
-    
-    # Use pypdf for proper stream decoding
     from pypdf import PdfReader
     reader = PdfReader(pdf_path)
     
     for page_num, page in enumerate(reader.pages):
-        print(f"\n{'='*50}")
-        print(f"PAGE {page_num}")
-        print(f"{'='*50}")
+        p(f"\n{'='*50}")
+        p(f"PAGE {page_num}")
+        p(f"{'='*50}")
         
-        # Get fonts info
+        # Fonts
         if '/Resources' in page:
             res = page['/Resources']
             if hasattr(res, 'get_object'):
@@ -62,24 +67,20 @@ def diagnose(pdf_path):
                 for fname, fref in fonts.items():
                     font = fref.get_object() if hasattr(fref, 'get_object') else fref
                     bf = font.get('/BaseFont', '?')
-                    enc = font.get('/Encoding', '?')
+                    enc_f = font.get('/Encoding', '?')
                     st = font.get('/Subtype', '?')
-                    print(f"\n  Font {fname}: BaseFont={bf}, Encoding={enc}, Subtype={st}")
+                    p(f"\n  Font {fname}: BaseFont={bf}, Encoding={enc_f}, Subtype={st}")
                     
-                    # Dump ToUnicode CMap
                     if '/ToUnicode' in font:
                         tu = font['/ToUnicode']
                         if hasattr(tu, 'get_object'):
                             tu = tu.get_object()
                         if hasattr(tu, 'get_data'):
                             cmap = tu.get_data()
-                            print(f"    ToUnicode CMap ({len(cmap)} bytes):")
-                            try:
-                                print(f"    {cmap.decode('latin-1')}")
-                            except:
-                                print(f"    (hex): {cmap[:500].hex()}")
+                            p(f"    ToUnicode CMap ({len(cmap)} bytes):")
+                            p(f"    {cmap.hex()[:2000]}")
         
-        # Get decoded content stream
+        # Content streams
         if '/Contents' in page:
             contents = page['/Contents']
             if hasattr(contents, 'get_object'):
@@ -95,28 +96,14 @@ def diagnose(pdf_path):
                 streams.append(contents.get_data())
             
             for si, stream_data in enumerate(streams):
-                print(f"\n  --- Content Stream {si} ({len(stream_data)} bytes) ---")
-                
-                # Show full decoded stream
-                try:
-                    text = stream_data.decode('latin-1')
-                except:
-                    text = stream_data.hex()
-                
-                # Find all text operators: Tj, TJ, ', "
-                # TJ looks like: [(bytes) num (bytes) num ...] TJ
-                # Tj looks like: (bytes) Tj or <hex> Tj
-                lines = text.split('\n')
-                for li, line in enumerate(lines):
-                    line = line.strip()
-                    if any(op in line for op in ['Tj', 'TJ', "'", '"', 'Tf']):
-                        print(f"    L{li}: {line[:200]}")
-                
-                # Also dump hex of the full stream for thorough analysis
-                print(f"\n  Full stream hex (first 3000 bytes):")
-                print(f"  {stream_data[:3000].hex()}")
-                print(f"\n  Full stream text (first 3000 chars):")
-                print(f"  {text[:3000]}")
+                p(f"\n  --- Content Stream {si} ({len(stream_data)} bytes) ---")
+                p(f"  Full stream hex (first 5000):")
+                p(f"  {stream_data[:5000].hex()}")
+                p(f"\n  Full stream hex (all):")
+                p(f"  {stream_data.hex()}")
+    
+    f_out.close()
+    p(f"\nDiagnostic saved to: {out_path}")
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
